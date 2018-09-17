@@ -1,0 +1,96 @@
+---
+title: "Machine Learning"
+output: html_document
+---
+
+## Introduction
+In this exercise, we use data from accelerometers attached to the belt, forearm, arm, and dumbbell of 6 participants to predict whether or not a participant performed a dumbbell lifting activity correctly.
+
+This is the Peer-graded Assignment for Week 4 of the Coursera "Practical Machine Learning" course.
+
+## Data Sets
+Data sets may be downloaded from:
+
+[https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv)
+
+[https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv)
+
+For more information on the project, go to: [http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har](http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har) 
+
+## Loading and Cleaning the Data
+First, let's load in the data:
+```{r load, message=FALSE, cache=TRUE}
+train <- read.csv("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", header = TRUE, na.strings = c("NA", ""))
+test  <- read.csv("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv" , header = TRUE, na.strings = c("NA", ""))
+```
+Ok, so the data set has a bunch of columns (variables) that are all empty. We will get rid of these mostly empty columns
+by keeping only those columns where more than 50% of the values are not NA:
+```{r clean1, cache=TRUE}
+not_empty <- colSums(is.na(train)) < dim(train)[1] * 0.5   # Keep only columns where < 50% is NA
+train     <- train[,which(not_empty)]
+test      <- test[,which(not_empty)]
+```
+Next: the first seven columns aren't useful -- they contain things like the row number (`X`) or the username (`user_name`). Let's get rid of those too:
+```{r clean2, cache=TRUE}
+train <- train[,-c(1:7)]
+test  <- test[,-c(1:7)]
+```
+To keep things from getting out of hand, we'll do some pre-processing: centering, scaling, and principal components. This will reduce the number of predictors and will minimize the impact of any highly-correlated predictors.
+```{r pca, cache=TRUE, message=FALSE}
+library(caret);
+preProc  <- preProcess(train[,-53], method = c("center", "scale", "pca"))  # other default values are fine.
+
+train_pca <- predict(preProc, train[,-53])
+train_pca$classe <- train$classe
+
+test_pca <- predict(preProc, test[,-53])
+test_pca$classe <- test$classe
+```
+
+## Fitting a model
+To pick a model, we'll try a few algorithms and then pick the one that gives us the highest accuracy. Here's five plausible models:
+
+1. Random Forest (rf)
+2. Generalized Boosted Modeling (gbm)
+3. Bootstrap Aggregation (treebag) 
+4. Naive Bayes (nb)
+5. Linear Discriminant Analysis (lda)
+
+To minimize out-of-model error, we'll use repeated k-fold cross validation, wherein we will run 10-fold cross validation with 3 repeats (note: we can also use this to estimate out-of-sample accuracy).
+```{r fit, cache=TRUE, message=FALSE}
+library(doParallel);                 # doParallel lets use a bunch cores, which speeds things up
+cl <- makePSOCKcluster(7)            # not to brag, but I have a fancy-pants computer 
+registerDoParallel(cl)               # this starts things off
+
+set.seed(1234)                       # the same as the combo on my luggage
+trn_ctrl     <- trainControl(method="repeatedcv", number=10, repeats=3) # repeated k-fold cross validation
+
+# Run the models. This takes a while. Get some coffee and go play with your cat.
+fit.rf       <- train(classe ~ ., method = "rf",      trControl=trn_ctrl, data = train_pca, metric="Accuracy")
+fit.gbm      <- train(classe ~ ., method = "gbm",     trControl=trn_ctrl, data = train_pca, metric="Accuracy", verbose = FALSE)
+fit.treebag  <- train(classe ~ ., method = "treebag", trControl=trn_ctrl, data = train_pca, metric="Accuracy")
+fit.nb       <- train(classe ~ ., method = "nb",      trControl=trn_ctrl, data = train_pca, metric="Accuracy")
+fit.lda      <- train(classe ~ ., method = "lda",     trControl=trn_ctrl, data = train_pca, metric="Accuracy")
+stopCluster(cl)                      # release the cores back into the wild
+```
+One groovy thing about *R* is that you can access each of the cross-validation runs using *resamples*. We'll use this to estimate the out-of-sample accuracy from each model based on each of the cross-validation runs. This is equivalent to assessing 10-fold cross validations with 3 repeats each (30 runs/condition).
+``` {r cache=TRUE}
+library(pander)      # Makes pretty tables in Rmd
+results <- resamples(list(rf=fit.rf, gbm=fit.gbm, bagging=fit.treebag, nb=fit.nb,lda = fit.lda))
+pander(summary(results)$statistics$Accuracy)
+```
+Random Forest (RF) performed the best based on accuracy, with a mean accuracy of about 0.98 (out-of-sample error = 1 - accuracy = 0.02). We will pick that as our final model. Here's a confusion matrix showing results of the final fit on the training data:
+```{r accuracy}
+library(pander)      # Makes pretty tables in Rmd
+pander(fit.rf$finalModel$confusion)
+```
+Nifty, right?
+
+### Conclusion:
+Random Forest gave us the best fit, with an estimated out-of-sample accuracy of 0.98 (error = 0.02). It's possible we could do better by including more principal components, but... then we run the risk of overfitting.
+
+Now, let's apply it to the test data set:
+```{r test, cache=TRUE}
+predicted <- predict(fit.rf, test_pca)
+predicted
+```
